@@ -20,6 +20,14 @@ import { ENCG_SOURCES } from "../sources/encg-sources.js";
 /** Préfixe KV exclusif au module ENCG */
 const KV_PREFIX = "encg";
 
+/** Délai entre les requêtes (ms) pour éviter d'être rate-limité */
+const REQUEST_DELAY_MS = 500;
+
+/** Pause asynchrone */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Point d'entrée principal du module ENCG.
  * Appelé depuis index.ts dans un bloc try/catch isolé.
@@ -41,8 +49,13 @@ export async function runEncgWatch(env: Env): Promise<WatchResult> {
   for (const source of sorted) {
     console.log(`[encg] Scan : ${source.url}`);
 
+    // ── Délai anti-rate-limit ───────────────────────────────
+    if (sourcesScanned > 0 || partialErrors.length > 0) {
+      await sleep(REQUEST_DELAY_MS);
+    }
+
     // ── Fetch HTML ──────────────────────────────────────────
-    const fetchResult = await fetchHtml(source.url, { timeoutMs: 20_000 });
+    const fetchResult = await fetchHtml(source.url, { timeoutMs: 20_000, maxRetries: 2 });
 
     if (!fetchResult.ok) {
       console.warn(`[encg] Échec fetch ${source.url}: ${fetchResult.error}`);
@@ -71,9 +84,12 @@ export async function runEncgWatch(env: Env): Promise<WatchResult> {
     if (!filterResult.category) continue;
 
     // ── Déduplication ───────────────────────────────────────
+    // IMPORTANT : on génère l'ID à partir de l'intitulé extrait,
+    // pas de l'extractExact (qui peut varier si le texte de la page change légèrement)
+    const intituleForHash = extractIntitule(text, filterResult.category);
     const detectionId = await generateDetectionId(
       source.etablissement,
-      filterResult.extractExact,
+      intituleForHash,
       source.url
     );
 
@@ -89,7 +105,7 @@ export async function runEncgWatch(env: Env): Promise<WatchResult> {
       id: detectionId,
       etablissement: source.etablissement,
       ville: source.ville,
-      intituleExact: extractIntitule(text, filterResult.category),
+      intituleExact: intituleForHash,
       category: filterResult.category,
       categoryLabel: CATEGORY_LABELS[filterResult.category],
       admissionType: filterResult.admissionType,
@@ -125,7 +141,7 @@ export async function runEncgWatch(env: Env): Promise<WatchResult> {
   const status: WatchResult["status"] =
     detections.length > 0
       ? "ok"
-      : partialErrors.length === ENCG_SOURCES.length
+      : partialErrors.length > 0 && sourcesScanned === 0
       ? "partial"
       : "empty";
 

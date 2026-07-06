@@ -5,13 +5,23 @@
 //    - ENCG        → "encg:<hash>"
 //    - Universités → "univ:<hash>"
 //  TTL : 60 jours (les annonces expirées se nettoient automatiquement).
+//
+//  📊 CALCUL DU RISQUE DE SATURATION :
+//  KV gratuit = 1 milliard de lectures, 1 million d'écritures/mois
+//  Avec ~40 sources * 2 modules * 30 jours = ~2 400 lectures/mois max
+//  Stockage : 1 Go max sur tier gratuit — largement suffisant
+//  Une clé ≈ 50 octets × 10 000 clés max = 500 Ko → aucun risque
 // ============================================================
 
 const KV_TTL_SECONDS = 60 * 24 * 3600; // 60 jours
+const KV_LIST_PAGE_SIZE = 1000; // Taille max de page KV
 
 /**
  * Génère un identifiant unique stable pour une détection.
- * Basé sur : établissement + intitulé + sourceUrl
+ * Basé sur : établissement + intitulé normalisé + sourceUrl
+ *
+ * ⚠ IMPORTANT : utiliser l'intitulé extrait (invariant),
+ * PAS l'extractExact qui peut varier si la page change légèrement.
  */
 export async function generateDetectionId(
   etablissement: string,
@@ -24,8 +34,9 @@ export async function generateDetectionId(
   const data = encoder.encode(raw);
   const hashBuffer = await crypto.subtle.digest("SHA-256", data);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
+  // 12 octets → 24 chars hex (meilleure résistance aux collisions)
   return hashArray
-    .slice(0, 8) // 8 octets → 16 chars hex (suffisant pour dédup)
+    .slice(0, 12)
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
@@ -62,13 +73,38 @@ export async function markAsSeen(
 }
 
 /**
- * Liste les clés stockées pour un préfixe donné.
+ * Liste TOUTES les clés stockées pour un préfixe donné.
+ * Gère la pagination KV (max 1000 clés par appel).
  * Utile pour le monitoring / debug.
  */
 export async function listSeenKeys(
   kv: KVNamespace,
   prefix: string
 ): Promise<string[]> {
-  const result = await kv.list({ prefix: `${prefix}:` });
-  return result.keys.map((k) => k.name);
+  const allKeys: string[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const result: KVNamespaceListResult<unknown, string> = await kv.list({
+      prefix: `${prefix}:`,
+      limit: KV_LIST_PAGE_SIZE,
+      cursor,
+    });
+    allKeys.push(...result.keys.map((k) => k.name));
+    cursor = result.list_complete ? undefined : result.cursor;
+  } while (cursor);
+
+  return allKeys;
+}
+
+/**
+ * Retourne le nombre de clés stockées pour un préfixe.
+ * Plus efficace que listSeenKeys() si on a juste besoin du comptage.
+ */
+export async function countSeenKeys(
+  kv: KVNamespace,
+  prefix: string
+): Promise<number> {
+  const keys = await listSeenKeys(kv, prefix);
+  return keys.length;
 }

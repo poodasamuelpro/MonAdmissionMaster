@@ -20,4 +20,9 @@ MIN_CONFIDENCE_SCORE=60
 # ── Secrets (à configurer aussi via wrangler secret put) ──────
 # RESEND_API_KEY=re_xxxxxxxxxxxxxxxx
 # BREVO_API_KEY=xkeysib-xxxxxxxxxxxxxxxx
-# TRIGGER_SECRET=mon-secret-de-declenchement-manuel
+
+# ⚠ OBLIGATOIRE : protège le Dashboard (/) et la route /trigger
+# Sans ce secret, le Dashboard et /trigger sont ouverts à tous !
+# Générer un secret fort : openssl rand -hex 32
+# Puis sur Cloudflare : wrangler secret put TRIGGER_SECRET
+# TRIGGER_SECRET=mon-secret-fort-minimum-32-caracteres

@@ -148,6 +148,10 @@ export interface Env {
   // Secrets (configurés via wrangler secret put)
   RESEND_API_KEY?: string;
   BREVO_API_KEY?: string;
+
+  // Secret de protection du dashboard et du déclenchement manuel
+  // À configurer : wrangler secret put TRIGGER_SECRET
+  TRIGGER_SECRET?: string;
 }
 
 /** Résumé d'exécution pour l'email de synthèse */

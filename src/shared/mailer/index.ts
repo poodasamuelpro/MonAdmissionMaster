@@ -26,6 +26,20 @@ export interface SendResult {
 }
 
 /**
+ * Échappe les caractères HTML dangereux pour prévenir les injections XSS
+ * dans les emails générés à partir de données scrapées.
+ */
+function escapeHtml(str: string | null | undefined): string {
+  if (!str) return "";
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
  * Envoie un email via le fournisseur configuré.
  * En dry-run : log uniquement, ne pas envoyer.
  */
@@ -98,13 +112,13 @@ export function buildAlertEmailHtml(
   const renderDetection = (d: DetectedMaster): string => `
     <div style="border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:16px;background:#fafafa;">
       <h3 style="margin:0 0 8px;color:#1a1a2e;font-size:16px;">
-        ${d.etablissement} — ${d.ville}
+        ${escapeHtml(d.etablissement)} — ${escapeHtml(d.ville)}
       </h3>
-      <p style="margin:4px 0;"><strong>Intitulé :</strong> ${d.intituleExact}</p>
+      <p style="margin:4px 0;"><strong>Intitulé :</strong> ${escapeHtml(d.intituleExact)}</p>
       <p style="margin:4px 0;">
         <strong>Catégorie :</strong>
         <span style="background:#e8f4fd;padding:2px 8px;border-radius:4px;font-size:13px;">
-          ${d.categoryLabel}
+          ${escapeHtml(d.categoryLabel)}
         </span>
       </p>
       <p style="margin:4px 0;">
@@ -113,15 +127,15 @@ export function buildAlertEmailHtml(
           ${d.surDossier ? "✅ Sur dossier (sans concours)" : d.admissionType === "avec_concours" ? "📝 Avec concours" : "❓ À vérifier"}
         </span>
       </p>
-      ${d.dateLimite ? `<p style="margin:4px 0;"><strong>Date limite :</strong> <span style="color:#c0392b;font-weight:bold;">${d.dateLimite}</span></p>` : ""}
+      ${d.dateLimite ? `<p style="margin:4px 0;"><strong>Date limite :</strong> <span style="color:#c0392b;font-weight:bold;">${escapeHtml(d.dateLimite)}</span></p>` : ""}
       ${d.fraisDossier !== null ? `<p style="margin:4px 0;"><strong>Frais de dossier :</strong> ${d.fraisDossier} MAD</p>` : "<p style='margin:4px 0;color:#777;'><em>Frais de dossier : non confirmé</em></p>"}
       ${d.fraisScolarite !== null ? `<p style="margin:4px 0;"><strong>Frais de scolarité/an :</strong> ${d.fraisScolarite} MAD</p>` : "<p style='margin:4px 0;color:#777;'><em>Frais de scolarité : non confirmé</em></p>"}
       ${d.fraisEtranger !== null ? `<p style="margin:4px 0;"><strong>Tarif étudiant étranger :</strong> ${d.fraisEtranger} MAD</p>` : "<p style='margin:4px 0;color:#e67e22;'><em>⚠ Tarif étranger : non confirmé — vérifier conditions spécifiques carte de séjour</em></p>"}
-      ${d.conditionsAcces ? `<p style="margin:4px 0;"><strong>Conditions d'accès :</strong> ${d.conditionsAcces}</p>` : ""}
-      ${d.concoursDates ? `<p style="margin:4px 0;"><strong>Concours/dates :</strong> ${d.concoursDates}</p>` : ""}
+      ${d.conditionsAcces ? `<p style="margin:4px 0;"><strong>Conditions d'accès :</strong> ${escapeHtml(d.conditionsAcces)}</p>` : ""}
+      ${d.concoursDates ? `<p style="margin:4px 0;"><strong>Concours/dates :</strong> ${escapeHtml(d.concoursDates)}</p>` : ""}
       <p style="margin:8px 0 4px;">
         <strong>Extrait source :</strong><br>
-        <span style="font-size:12px;color:#555;font-style:italic;">${d.extractExact}</span>
+        <span style="font-size:12px;color:#555;font-style:italic;">${escapeHtml(d.extractExact)}</span>
       </p>
       <p style="margin:4px 0;">
         <strong>Confiance :</strong>
@@ -130,9 +144,9 @@ export function buildAlertEmailHtml(
         </span>
         ${d.requiresManualCheck ? " ⚠ <strong>À vérifier manuellement</strong>" : ""}
       </p>
-      ${d.warnings.length > 0 ? `<p style="margin:4px 0;color:#856404;font-size:12px;">⚠ ${d.warnings.join(" | ")}</p>` : ""}
+      ${d.warnings.length > 0 ? `<p style="margin:4px 0;color:#856404;font-size:12px;">⚠ ${escapeHtml(d.warnings.join(" | "))}</p>` : ""}
       <p style="margin:8px 0 0;">
-        <a href="${d.sourceUrl}" style="color:#007bff;text-decoration:none;">🔗 Source officielle</a>
+        <a href="${escapeHtml(d.sourceUrl)}" style="color:#007bff;text-decoration:none;">🔗 Source officielle</a>
       </p>
     </div>
   `;

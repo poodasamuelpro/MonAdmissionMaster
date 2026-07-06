@@ -5,7 +5,7 @@
 
 name = "monadmissionmaster"
 main = "src/index.ts"
-compatibility_date = "2024-04-03"
+compatibility_date = "2025-06-30"
 compatibility_flags = ["nodejs_compat"]
 
 # ────────────────────────────────────────────────
@@ -16,9 +16,14 @@ enabled = true
 
 # ────────────────────────────────────────────────
 # Variables d'environnement NON-sensibles
-# Les secrets (RESEND_API_KEY, BREVO_API_KEY, etc.)
+# Les secrets (RESEND_API_KEY, BREVO_API_KEY, TRIGGER_SECRET)
 # sont à configurer via : wrangler secret put NOM_SECRET
 # JAMAIS mettre de valeur secrète dans ce fichier.
+# ────────────────────────────────────────────────
+# Secrets à configurer (via wrangler secret put) :
+#   wrangler secret put RESEND_API_KEY       → clé API Resend
+#   wrangler secret put BREVO_API_KEY        → clé API Brevo (si utilisé)
+#   wrangler secret put TRIGGER_SECRET       → protège /trigger et le dashboard
 # ────────────────────────────────────────────────
 [vars]
 # Fournisseur mail actif : "resend" ou "brevo"

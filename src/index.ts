@@ -10,6 +10,7 @@ import {
   sendDetectionAlertEmail,
   sendErrorAlertEmail,
 } from "./shared/mailer/index.js";
+import { listSeenKeys, countSeenKeys } from "./shared/dedupe.js";
 
 // ────────────────────────────────────────────────────────────
 // Logique de décision cron
@@ -149,11 +150,72 @@ async function handleHttpRequest(
 
   // ── Route /health (JSON) ──────────────────────────────────
   if (url.pathname === "/health") {
-    return Response.json({ status: "ok", service: "MonAdmissionMaster" });
+    return Response.json({ status: "ok", service: "MonAdmissionMaster", version: "2.0.0" });
+  }
+
+  // ── Route /status — monitoring KV (protégée par secret) ──
+  if (url.pathname === "/status") {
+    const secret = url.searchParams.get("secret");
+    const triggerSecret = env.TRIGGER_SECRET;
+    if (triggerSecret && secret !== triggerSecret) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    try {
+      const [encgCount, univCount] = await Promise.all([
+        countSeenKeys(env.DEDUPE_KV, "encg"),
+        countSeenKeys(env.DEDUPE_KV, "univ"),
+      ]);
+      const today = new Date();
+      const decision = decideCronAction(today);
+      const epochDay = getEpochDay(today);
+      return Response.json({
+        service: "MonAdmissionMaster",
+        status: "ok",
+        timestamp: today.toISOString(),
+        cron: {
+          todayDecision: decision,
+          nextEncgInDays: computeNextIn(epochDay, 0),
+          nextUnivInDays: computeNextIn(epochDay, 2),
+        },
+        kv: {
+          encgSeenCount: encgCount,
+          univSeenCount: univCount,
+          totalKeys: encgCount + univCount,
+        },
+        config: {
+          emailProvider: env.EMAIL_PROVIDER,
+          dryRun: env.DRY_RUN === "true",
+          minConfidenceScore: env.MIN_CONFIDENCE_SCORE,
+          hasTriggerSecret: !!env.TRIGGER_SECRET,
+          hasResendKey: !!env.RESEND_API_KEY,
+          hasBrevoKey: !!env.BREVO_API_KEY,
+        },
+      });
+    } catch (err) {
+      return Response.json({ error: "Erreur lecture KV", detail: String(err) }, { status: 500 });
+    }
   }
 
   // ── Page d'accueil / Dashboard ────────────────────────────
   if (url.pathname === "/") {
+    // Protection du dashboard par TRIGGER_SECRET (si configuré)
+    const secret = url.searchParams.get("secret");
+    const triggerSecret = env.TRIGGER_SECRET;
+    if (triggerSecret && secret !== triggerSecret) {
+      return new Response(
+        `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Accès protégé</title>
+        <script src="https://cdn.tailwindcss.com"></script></head>
+        <body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+          <div class="bg-white rounded-xl shadow-lg p-8 max-w-sm w-full text-center">
+            <p class="text-4xl mb-4">🔒</p>
+            <h1 class="text-xl font-bold text-gray-800 mb-2">Accès protégé</h1>
+            <p class="text-gray-600 text-sm">Ce dashboard nécessite un secret d'accès.<br>
+            Ajoutez <code class="bg-gray-100 px-1 rounded">?secret=VOTRE_SECRET</code> à l'URL.</p>
+          </div>
+        </body></html>`,
+        { status: 401, headers: { "Content-Type": "text/html; charset=UTF-8" } }
+      );
+    }
     const today = new Date();
     const decision = decideCronAction(today);
     const epochDay = getEpochDay(today);
@@ -168,7 +230,8 @@ async function handleHttpRequest(
     const module = url.searchParams.get("module") ?? "auto";
     const secret = url.searchParams.get("secret");
 
-    const triggerSecret = (env as any).TRIGGER_SECRET;
+    // Protection par TRIGGER_SECRET (typage propre, sans cast)
+    const triggerSecret = env.TRIGGER_SECRET;
     if (triggerSecret && secret !== triggerSecret) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -177,11 +240,11 @@ async function handleHttpRequest(
     const decision = module === "auto" ? decideCronAction(today) : (module as CronDecision);
     const summaryModules: ExecutionSummary["modules"] = [];
 
-    if (decision === "encg" || (decision as any) === "both") {
+    if (decision === "encg" || (decision as string) === "both") {
       const r = await runModule("encg", env);
       summaryModules.push({ service: "encg", ...r });
     }
-    if (decision === "universites" || (decision as any) === "both") {
+    if (decision === "universites" || (decision as string) === "both") {
       const r = await runModule("universites", env);
       summaryModules.push({ service: "universites", ...r });
     }
@@ -237,7 +300,12 @@ async function handleScheduled(
     isDryRun: env.DRY_RUN === "true",
   };
 
-  await sendSummaryEmail(env, summary);
+  // N'envoyer l'email de synthèse que s'il y a des détections ou des erreurs
+  if (totalNew > 0 || summary.hasErrors) {
+    await sendSummaryEmail(env, summary);
+  } else {
+    console.log(`[cron] Aucune nouvelle détection — email de synthèse non envoyé`);
+  }
 }
 
 export default {

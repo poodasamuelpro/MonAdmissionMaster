@@ -9,6 +9,10 @@ export interface FetchOptions {
   timeoutMs?: number;
   /** Headers supplémentaires */
   headers?: Record<string, string>;
+  /** Nombre de tentatives max (défaut : 2) */
+  maxRetries?: number;
+  /** Délai entre les tentatives en ms (défaut : 1000) */
+  retryDelayMs?: number;
 }
 
 /** Résultat d'un fetch HTML */
@@ -21,56 +25,89 @@ export interface FetchResult {
 }
 
 /**
- * Récupère le HTML d'une URL.
+ * Pause asynchrone (compatible CF Workers via setTimeout/Promise)
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Récupère le HTML d'une URL avec retry automatique.
  * Retourne toujours un FetchResult, ne lève jamais d'exception.
  */
 export async function fetchHtml(
   url: string,
   options: FetchOptions = {}
 ): Promise<FetchResult> {
-  const { timeoutMs = 15_000, headers = {} } = options;
+  const { timeoutMs = 15_000, headers = {}, maxRetries = 2, retryDelayMs = 1_000 } = options;
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  let lastError = "";
+  let lastStatus = 0;
 
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (compatible; MonAdmissionMasterBot/1.0; veille-academique)",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "fr-FR,fr;q=0.9,ar;q=0.8,en;q=0.7",
-        ...headers,
-      },
-      redirect: "follow",
-    });
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    clearTimeout(timeoutId);
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (compatible; MonAdmissionMasterBot/1.0; veille-academique)",
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "fr-FR,fr;q=0.9,ar;q=0.8,en;q=0.7",
+          "Accept-Encoding": "gzip, deflate",
+          ...headers,
+        },
+        redirect: "follow",
+      });
 
-    if (!response.ok) {
-      return {
-        url,
-        html: "",
-        statusCode: response.status,
-        ok: false,
-        error: `HTTP ${response.status} ${response.statusText}`,
-      };
+      clearTimeout(timeoutId);
+
+      // 429 (rate limit) → on attend plus longtemps avant de réessayer
+      if (response.status === 429) {
+        lastError = `HTTP 429 Too Many Requests`;
+        lastStatus = 429;
+        if (attempt < maxRetries) await sleep(retryDelayMs * attempt * 2);
+        continue;
+      }
+
+      if (!response.ok) {
+        // Pour les 4xx (sauf 429), pas la peine de réessayer
+        clearTimeout(timeoutId);
+        return {
+          url,
+          html: "",
+          statusCode: response.status,
+          ok: false,
+          error: `HTTP ${response.status} ${response.statusText}`,
+        };
+      }
+
+      const html = await response.text();
+      return { url, html, statusCode: response.status, ok: true };
+
+    } catch (err: unknown) {
+      clearTimeout(timeoutId);
+      const msg =
+        err instanceof Error
+          ? err.name === "AbortError"
+            ? `Timeout après ${timeoutMs}ms`
+            : err.message
+          : String(err);
+      lastError = msg;
+      lastStatus = 0;
+
+      // Timeout → réessayer avec délai
+      if (attempt < maxRetries) {
+        await sleep(retryDelayMs * attempt);
+        continue;
+      }
     }
-
-    const html = await response.text();
-    return { url, html, statusCode: response.status, ok: true };
-  } catch (err: unknown) {
-    clearTimeout(timeoutId);
-    const msg =
-      err instanceof Error
-        ? err.name === "AbortError"
-          ? `Timeout après ${timeoutMs}ms`
-          : err.message
-        : String(err);
-    return { url, html: "", statusCode: 0, ok: false, error: msg };
   }
+
+  return { url, html: "", statusCode: lastStatus, ok: false, error: lastError };
 }
 
 /**
@@ -94,6 +131,7 @@ export function htmlToText(html: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
     .replace(/&eacute;/g, "é")
     .replace(/&egrave;/g, "è")
     .replace(/&ecirc;/g, "ê")
@@ -102,10 +140,13 @@ export function htmlToText(html: string): string {
     .replace(/&ocirc;/g, "ô")
     .replace(/&ucirc;/g, "û")
     .replace(/&acirc;/g, "â")
-    .replace(/&#[0-9]+;/g, (match) => {
-      const code = parseInt(match.slice(2, -1), 10);
-      return String.fromCharCode(code);
-    })
+    .replace(/&iuml;/g, "ï")
+    .replace(/&euml;/g, "ë")
+    .replace(/&ugrave;/g, "ù")
+    // Entités numériques décimales &#nnn;
+    .replace(/&#([0-9]+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+    // Entités numériques hexadécimales &#xHH;
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
     // Normaliser les espaces multiples
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
