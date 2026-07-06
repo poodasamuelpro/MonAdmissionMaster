@@ -1,0 +1,199 @@
+// ============================================================
+//  modules/encg.ts — Module de veille ENCG
+//
+//  Responsabilité : scanner les sources ENCG, filtrer les
+//  Masters Finance, dédupliquer et retourner les résultats.
+//  Totalement isolé : son propre try/catch dans index.ts.
+// ============================================================
+
+import type { Env, DetectedMaster, WatchResult, PartialError } from "../shared/types.js";
+import { CATEGORY_LABELS } from "../shared/types.js";
+import { fetchHtml, htmlToText } from "../shared/scraper.js";
+import { analyzeText } from "../shared/filter.js";
+import {
+  generateDetectionId,
+  isDuplicate,
+  markAsSeen,
+} from "../shared/dedupe.js";
+import { ENCG_SOURCES } from "../sources/encg-sources.js";
+
+/** Préfixe KV exclusif au module ENCG */
+const KV_PREFIX = "encg";
+
+/**
+ * Point d'entrée principal du module ENCG.
+ * Appelé depuis index.ts dans un bloc try/catch isolé.
+ */
+export async function runEncgWatch(env: Env): Promise<WatchResult> {
+  const executedAt = new Date().toISOString();
+  console.log(`[encg] Démarrage veille ENCG — ${executedAt}`);
+
+  const minScore = parseInt(env.MIN_CONFIDENCE_SCORE ?? "60", 10);
+  const detections: DetectedMaster[] = [];
+  const partialErrors: PartialError[] = [];
+  let sourcesScanned = 0;
+  let filteredOut = 0;
+  let duplicatesSkipped = 0;
+
+  // Traiter les sources par priorité (1 d'abord)
+  const sorted = [...ENCG_SOURCES].sort((a, b) => a.priority - b.priority);
+
+  for (const source of sorted) {
+    console.log(`[encg] Scan : ${source.url}`);
+
+    // ── Fetch HTML ──────────────────────────────────────────
+    const fetchResult = await fetchHtml(source.url, { timeoutMs: 20_000 });
+
+    if (!fetchResult.ok) {
+      console.warn(`[encg] Échec fetch ${source.url}: ${fetchResult.error}`);
+      partialErrors.push({
+        sourceUrl: source.url,
+        error: fetchResult.error ?? "Erreur inconnue",
+        timestamp: new Date().toISOString(),
+      });
+      continue;
+    }
+
+    sourcesScanned++;
+    const text = htmlToText(fetchResult.html);
+
+    // ── Analyse & filtrage ──────────────────────────────────
+    const filterResult = analyzeText(text, source.url, minScore);
+
+    if (!filterResult.matched) {
+      filteredOut++;
+      console.log(
+        `[encg] Ignoré (score ${filterResult.score}) : ${source.url} — ${filterResult.warnings.join(", ")}`
+      );
+      continue;
+    }
+
+    if (!filterResult.category) continue;
+
+    // ── Déduplication ───────────────────────────────────────
+    const detectionId = await generateDetectionId(
+      source.etablissement,
+      filterResult.extractExact,
+      source.url
+    );
+
+    const alreadySeen = await isDuplicate(env.DEDUPE_KV, KV_PREFIX, detectionId);
+    if (alreadySeen) {
+      duplicatesSkipped++;
+      console.log(`[encg] Doublon ignoré : ${source.etablissement}`);
+      continue;
+    }
+
+    // ── Construction de la détection ────────────────────────
+    const detection: DetectedMaster = {
+      id: detectionId,
+      etablissement: source.etablissement,
+      ville: source.ville,
+      intituleExact: extractIntitule(text, filterResult.category),
+      category: filterResult.category,
+      categoryLabel: CATEGORY_LABELS[filterResult.category],
+      admissionType: filterResult.admissionType,
+      surDossier: filterResult.surDossier,
+      confidenceScore: filterResult.score,
+      confidenceLevel: filterResult.level,
+      extractExact: filterResult.extractExact,
+      sourceUrl: source.url,
+      detectedAt: new Date().toISOString(),
+      dateLimite: filterResult.dateLimite,
+      fraisDossier: filterResult.fraisDossier,
+      fraisScolarite: filterResult.fraisScolarite,
+      fraisEtranger: filterResult.fraisEtranger,
+      conditionsAcces: extractConditionsAcces(text),
+      concoursDates: extractConcoursDates(text),
+      requiresManualCheck: filterResult.requiresManualCheck,
+      warnings: filterResult.warnings,
+    };
+
+    // ── Marquer comme vu ────────────────────────────────────
+    await markAsSeen(env.DEDUPE_KV, KV_PREFIX, detectionId, {
+      etablissement: source.etablissement,
+      intitule: detection.intituleExact,
+      detectedAt: detection.detectedAt,
+    });
+
+    detections.push(detection);
+    console.log(
+      `[encg] ✅ Détection : ${source.etablissement} — ${detection.intituleExact} (score: ${filterResult.score})`
+    );
+  }
+
+  const status: WatchResult["status"] =
+    detections.length > 0
+      ? "ok"
+      : partialErrors.length === ENCG_SOURCES.length
+      ? "partial"
+      : "empty";
+
+  console.log(
+    `[encg] Terminé — ${detections.length} détection(s), ${partialErrors.length} erreur(s) partielles`
+  );
+
+  return {
+    module: "encg",
+    executedAt,
+    sourcesScanned,
+    newDetections: detections.length,
+    filteredOut,
+    duplicatesSkipped,
+    detections,
+    partialErrors,
+    status,
+  };
+}
+
+// ────────────────────────────────────────────────────────────
+// Helpers d'extraction locaux
+// ────────────────────────────────────────────────────────────
+
+/** Extrait l'intitulé du Master depuis le texte */
+function extractIntitule(text: string, category: number): string {
+  const patterns = [
+    /master\s+(?:en\s+|spécialis[eé]\s+en\s+)?([^\n.;,]{5,80})/i,
+    /m[12]\s+([^\n.;,]{5,80}finance[^\n.;,]{0,60})/i,
+    /formation\s+(?:en\s+)?([^\n.;,]{5,80}finance[^\n.;,]{0,40})/i,
+  ];
+
+  for (const pat of patterns) {
+    const match = text.match(pat);
+    if (match?.[1]) {
+      const intitule = match[1].trim().replace(/\s+/g, " ");
+      if (intitule.length > 5 && intitule.length < 120) return intitule;
+    }
+  }
+
+  // Fallback par catégorie
+  const fallbacks: Record<number, string> = {
+    1: "Master Finance (intitulé exact non extrait — vérifier source)",
+    2: "Master Ingénierie Financière (intitulé exact non extrait — vérifier source)",
+    3: "Master Finance d'Entreprise (intitulé exact non extrait — vérifier source)",
+    4: "Master BI / Data Finance (intitulé exact non extrait — vérifier source)",
+  };
+  return fallbacks[category] ?? "Master Finance (intitulé non extrait)";
+}
+
+/** Extrait les conditions d'accès */
+function extractConditionsAcces(text: string): string | null {
+  const match = text.match(
+    /(?:conditions?\s+d[''\s](?:accès|admission)|pré[\s-]?requis|niveau\s+requis|avoir\s+une?\s+(?:licence|bac\s*\+))[^\n.]{0,200}/i
+  );
+  if (match?.[0]) {
+    return match[0].trim().replace(/\s+/g, " ").slice(0, 200);
+  }
+  return null;
+}
+
+/** Extrait les dates de concours */
+function extractConcoursDates(text: string): string | null {
+  const match = text.match(
+    /(?:concours|épreuve[s]?|test\s+de\s+sélection)[^\n.]{0,200}/i
+  );
+  if (match?.[0]) {
+    return match[0].trim().replace(/\s+/g, " ").slice(0, 200);
+  }
+  return null;
+}

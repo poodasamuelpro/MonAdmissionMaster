@@ -1,0 +1,23 @@
+# ============================================================
+#  .dev.vars.example — Variables d'environnement locales
+#  COPIER ce fichier en .dev.vars pour le développement local.
+#  .dev.vars est dans .gitignore — ne JAMAIS committer .dev.vars
+# ============================================================
+
+# Fournisseur email actif
+EMAIL_PROVIDER=resend
+
+# Adresses email
+ALERT_EMAIL_TO=votre.email@example.com
+ALERT_EMAIL_FROM=alertes@votre-domaine.com
+
+# Mode dry-run (true = ne pas envoyer de vrais emails)
+DRY_RUN=true
+
+# Seuil de confiance minimum
+MIN_CONFIDENCE_SCORE=60
+
+# ── Secrets (à configurer aussi via wrangler secret put) ──────
+# RESEND_API_KEY=re_xxxxxxxxxxxxxxxx
+# BREVO_API_KEY=xkeysib-xxxxxxxxxxxxxxxx
+# TRIGGER_SECRET=mon-secret-de-declenchement-manuel

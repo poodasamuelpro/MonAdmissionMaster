@@ -1,0 +1,69 @@
+# wrangler.toml — MonAdmissionMaster
+# Worker unique : un seul déploiement, deux modules internes isolés.
+# Secrets à configurer via : wrangler secret put <NOM_SECRET>
+# Variables d'environnement non-sensibles ici, secrets JAMAIS ici.
+
+name = "monadmissionmaster"
+main = "src/index.ts"
+compatibility_date = "2024-04-03"
+compatibility_flags = ["nodejs_compat"]
+
+# ────────────────────────────────────────────────
+# Observabilité (logs Workers)
+# ────────────────────────────────────────────────
+[observability]
+enabled = true
+
+# ────────────────────────────────────────────────
+# Variables d'environnement NON-sensibles
+# Les secrets (RESEND_API_KEY, BREVO_API_KEY, etc.)
+# sont à configurer via : wrangler secret put NOM_SECRET
+# JAMAIS mettre de valeur secrète dans ce fichier.
+# ────────────────────────────────────────────────
+[vars]
+# Fournisseur mail actif : "resend" ou "brevo"
+EMAIL_PROVIDER = "resend"
+
+# Adresse de destination des alertes
+ALERT_EMAIL_TO = "votre.email@example.com"
+
+# Adresse expéditrice (doit être vérifiée sur Resend/Brevo)
+ALERT_EMAIL_FROM = "alertes@votre-domaine.com"
+
+# Mode dry-run : "true" = ne pas envoyer de vrais emails, "false" = envoi réel
+DRY_RUN = "false"
+
+# Seuil de confiance minimum pour signaler un résultat (0-100)
+MIN_CONFIDENCE_SCORE = "60"
+
+# ────────────────────────────────────────────────
+# KV Namespace — Déduplication
+# Créer avec : wrangler kv namespace create DEDUPE_KV
+# Puis remplacer "YOUR_KV_NAMESPACE_ID" par l'ID retourné
+# ────────────────────────────────────────────────
+[[kv_namespaces]]
+binding = "DEDUPE_KV"
+id = "YOUR_KV_NAMESPACE_ID"
+# preview_id = "YOUR_KV_PREVIEW_NAMESPACE_ID"  # décommenter si nécessaire
+
+# ────────────────────────────────────────────────
+# Cron Triggers — Logique de déclenchement différencié
+#
+# STRATÉGIE : ENCG et Universités ne se déclenchent jamais le même jour.
+#   - Deux crons quotidiens tournent, mais la logique dans index.ts
+#     utilise la date du jour pour décider QUEL module exécuter :
+#       * Jour pair   (day % 5 == 0) → ENCG
+#       * Jour pair+2 (day % 5 == 2) → Universités
+#     Cycle de 5 jours : si aujourd'hui=J0 → ENCG, J2 → Univ, J5 → ENCG, J7 → Univ...
+#
+#   - Un seul cron suffit : tous les jours à 7h00 UTC, la logique interne
+#     détermine si c'est un jour ENCG, un jour Universités, ou aucun.
+#
+#   - Cron de contrôle quotidien (vérifie si c'est un jour d'action)
+#   - Un second cron hebdomadaire de sécurité (filet de sécurité)
+# ────────────────────────────────────────────────
+[triggers]
+crons = [
+  "0 7 * * *",   # Tous les jours à 07h00 UTC — logique interne décide ENCG ou Univ
+  "0 8 * * 1"    # Lundi 08h00 UTC — cron de vérification hebdomadaire / filet de sécurité
+]

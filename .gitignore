@@ -1,0 +1,33 @@
+# Dépendances
+node_modules/
+
+# Fichiers de build
+dist/
+.wrangler/
+
+# Variables d'environnement locales — NE JAMAIS COMMITTER
+.dev.vars
+.env
+.env.*
+*.env
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# TypeScript
+*.tsbuildinfo
+
+# Backup
+*.backup
+*.bak
