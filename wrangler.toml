@@ -43,7 +43,7 @@ MIN_CONFIDENCE_SCORE = "60"
 # ────────────────────────────────────────────────
 [[kv_namespaces]]
 binding = "DEDUPE_KV"
-id = "YOUR_KV_NAMESPACE_ID"
+id = "4b9db54ae2c54681ad15a4db6bea5f8a"
 # preview_id = "YOUR_KV_PREVIEW_NAMESPACE_ID"  # décommenter si nécessaire
 
 # ────────────────────────────────────────────────
