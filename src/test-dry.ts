@@ -1,5 +1,5 @@
 // ============================================================
-//  src/test-dry.ts — Tests dry-run (Node.js / tsx)
+//  src/test-dry.ts — Tests dry-run (Node.js / tsx) 
 //
 //  Exécution : npx tsx src/test-dry.ts
 //
