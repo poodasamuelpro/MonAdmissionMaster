@@ -1,33 +1,5 @@
 // ============================================================
 //  src/index.ts — Point d'entrée Worker MonAdmissionMaster
-//
-//  LOGIQUE DE CRON DIFFÉRENCIÉE :
-//  ─────────────────────────────────────────────────────────
-//  Objectif : ENCG et Universités ne se déclenchent JAMAIS
-//  le même jour, avec 2 jours d'écart entre eux, cycle de 5j.
-//
-//  Fonctionnement :
-//    On calcule "jour d'époque" = floor(timestamp / 86400000)
-//    ENCG      : se déclenche si (epochDay % 5) == 0
-//    Universités : se déclenche si (epochDay % 5) == 2
-//    Autres jours (1, 3, 4) : pas d'action, log uniquement
-//
-//  Exemple de cycle (en partant du J0 arbitraire) :
-//    J0  → ENCG
-//    J2  → Universités
-//    J5  → ENCG
-//    J7  → Universités
-//    J10 → ENCG
-//    ...
-//
-//  → 2 jours d'écart garantis entre ENCG et Universités.
-//  → Chaque module attend 5 jours avant de se redéclencher.
-//  → Les deux ne se déclenchent jamais le même jour.
-//
-//  ISOLATION DES ERREURS :
-//    Chaque module est dans son propre try/catch.
-//    L'échec de l'un n'interrompt jamais l'autre.
-//    Notification email envoyée en cas d'erreur.
 // ============================================================
 
 import type { Env, WatchResult, ExecutionSummary } from "./shared/types.js";
@@ -43,27 +15,15 @@ import {
 // Logique de décision cron
 // ────────────────────────────────────────────────────────────
 
-/** Retourne le "jour d'époque" (nombre de jours depuis Unix epoch) */
 function getEpochDay(date: Date = new Date()): number {
   return Math.floor(date.getTime() / (1000 * 60 * 60 * 24));
 }
 
 type CronDecision = "encg" | "universites" | "none";
 
-/**
- * Détermine quel module doit s'exécuter aujourd'hui.
- *
- * Cycle de 5 jours :
- *   epochDay % 5 == 0 → ENCG
- *   epochDay % 5 == 2 → Universités
- *   autres             → aucun (jour de repos)
- *
- * Forceable via l'URL pour les tests (/trigger?module=encg|universites|both).
- */
 export function decideCronAction(date: Date = new Date()): CronDecision {
   const day = getEpochDay(date);
   const mod = day % 5;
-
   if (mod === 0) return "encg";
   if (mod === 2) return "universites";
   return "none";
@@ -79,38 +39,106 @@ async function runModule(
 ): Promise<{ status: "ok" | "error"; result?: WatchResult; error?: string }> {
   try {
     let result: WatchResult;
-
     if (name === "encg") {
       result = await runEncgWatch(env);
     } else {
       result = await runUniversitesWatch(env);
     }
-
-    // Envoyer email d'alerte si nouvelles détections
     if (result.newDetections > 0) {
-      const moduleName =
-        name === "encg" ? "ENCG" : "Universités publiques";
+      const moduleName = name === "encg" ? "ENCG" : "Universités publiques";
       await sendDetectionAlertEmail(env, moduleName, result);
     }
-
     return { status: "ok", result };
   } catch (err: unknown) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     console.error(`[${name}] ERREUR CRITIQUE :`, err);
-
-    // Notification email d'erreur
     try {
       await sendErrorAlertEmail(env, name, errorMessage);
     } catch (mailErr) {
       console.error(`[${name}] Échec envoi email d'erreur :`, mailErr);
     }
-
     return { status: "error", error: errorMessage };
   }
 }
 
 // ────────────────────────────────────────────────────────────
-// Handler HTTP (fetch) — pour tests manuels et monitoring
+// Page de contrôle HTML
+// ────────────────────────────────────────────────────────────
+
+function renderControlPage(decision: string, epochDay: number, nextEncg: number, nextUniv: number): string {
+  return `
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>MonAdmissionMaster - Dashboard</title>
+      <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+      <div class="max-w-md w-full bg-white rounded-xl shadow-lg p-8">
+        <h1 class="text-2xl font-bold text-gray-800 mb-6 text-center">🎓 MonAdmissionMaster</h1>
+        
+        <div class="space-y-4 mb-8">
+          <div class="p-4 bg-blue-50 rounded-lg">
+            <p class="text-sm text-blue-600 font-semibold uppercase">État du cycle</p>
+            <p class="text-lg text-blue-900 font-bold">Aujourd'hui : ${decision.toUpperCase()}</p>
+          </div>
+          
+          <div class="grid grid-cols-2 gap-4 text-center">
+            <div class="p-3 bg-gray-50 rounded-lg">
+              <p class="text-xs text-gray-500">Prochain ENCG</p>
+              <p class="font-bold">J-${nextEncg}</p>
+            </div>
+            <div class="p-3 bg-gray-50 rounded-lg">
+              <p class="text-xs text-gray-500">Prochain Univ</p>
+              <p class="font-bold">J-${nextUniv}</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="space-y-3">
+          <p class="text-sm text-gray-600 mb-2 font-medium">Lancer un scan manuel :</p>
+          <button onclick="trigger('encg')" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg transition">Scanner ENCG</button>
+          <button onclick="trigger('universites')" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-lg transition">Scanner Universités</button>
+        </div>
+
+        <div id="status" class="mt-6 p-4 rounded-lg hidden text-sm"></div>
+
+        <script>
+          async function trigger(mod) {
+            const status = document.getElementById('status');
+            const secret = new URLSearchParams(window.location.search).get('secret');
+            
+            status.className = "mt-6 p-4 rounded-lg bg-gray-100 text-gray-600";
+            status.innerHTML = "Scan en cours...";
+            status.classList.remove('hidden');
+
+            try {
+              const res = await fetch(\`/trigger?module=\${mod}\${secret ? '&secret=' + secret : ''}\`);
+              const data = await res.json();
+              
+              if (res.ok) {
+                status.className = "mt-6 p-4 rounded-lg bg-green-100 text-green-700";
+                status.innerHTML = "<b>Succès !</b> Scan terminé. " + (data.summary.totalNewDetections > 0 ? "Nouveautés trouvées !" : "Rien de neuf.");
+              } else {
+                status.className = "mt-6 p-4 rounded-lg bg-red-100 text-red-700";
+                status.innerHTML = "<b>Erreur :</b> " + (data.error || "Échec du scan");
+              }
+            } catch (e) {
+              status.className = "mt-6 p-4 rounded-lg bg-red-100 text-red-700";
+              status.innerHTML = "Erreur réseau.";
+            }
+          }
+        </script>
+      </div>
+    </body>
+    </html>
+  `;
+}
+
+// ────────────────────────────────────────────────────────────
+// Handler HTTP (fetch)
 // ────────────────────────────────────────────────────────────
 
 async function handleHttpRequest(
@@ -119,25 +147,20 @@ async function handleHttpRequest(
 ): Promise<Response> {
   const url = new URL(request.url);
 
-  // ── Route /health ──────────────────────────────────────
-  if (url.pathname === "/health" || url.pathname === "/") {
+  // ── Route /health (JSON) ──────────────────────────────────
+  if (url.pathname === "/health") {
+    return Response.json({ status: "ok", service: "MonAdmissionMaster" });
+  }
+
+  // ── Page d'accueil / Dashboard ────────────────────────────
+  if (url.pathname === "/") {
     const today = new Date();
     const decision = decideCronAction(today);
     const epochDay = getEpochDay(today);
-
-    return Response.json({
-      status: "ok",
-      service: "MonAdmissionMaster",
-      version: "1.0.0",
-      timestamp: today.toISOString(),
-      cronDecision: {
-        today: decision,
-        epochDay,
-        epochDayMod5: epochDay % 5,
-        nextEncgIn: computeNextIn(epochDay, 0),
-        nextUniversitesIn: computeNextIn(epochDay, 2),
-      },
-    });
+    return new Response(
+      renderControlPage(decision, epochDay, computeNextIn(epochDay, 0), computeNextIn(epochDay, 2)),
+      { headers: { "Content-Type": "text/html; charset=UTF-8" } }
+    );
   }
 
   // ── Route /trigger — déclenchement manuel ──────────────
@@ -145,43 +168,29 @@ async function handleHttpRequest(
     const module = url.searchParams.get("module") ?? "auto";
     const secret = url.searchParams.get("secret");
 
-    // Protection minimale : vérifier un secret optionnel
-    // (configurer TRIGGER_SECRET comme wrangler secret)
-    const triggerSecret = (env as Env & { TRIGGER_SECRET?: string })
-      .TRIGGER_SECRET;
+    const triggerSecret = (env as any).TRIGGER_SECRET;
     if (triggerSecret && secret !== triggerSecret) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const today = new Date();
-    const decision =
-      module === "auto" ? decideCronAction(today) : (module as CronDecision);
-
+    const decision = module === "auto" ? decideCronAction(today) : (module as CronDecision);
     const summaryModules: ExecutionSummary["modules"] = [];
 
-    if (decision === "encg" || decision === "both" as CronDecision) {
+    if (decision === "encg" || (decision as any) === "both") {
       const r = await runModule("encg", env);
       summaryModules.push({ service: "encg", ...r });
     }
-
-    if (decision === "universites" || decision === "both" as CronDecision) {
+    if (decision === "universites" || (decision as any) === "both") {
       const r = await runModule("universites", env);
       summaryModules.push({ service: "universites", ...r });
     }
 
     if (summaryModules.length === 0) {
-      return Response.json({
-        message: "Aucun module planifié pour aujourd'hui",
-        decision,
-        module,
-      });
+      return Response.json({ message: "Aucun module planifié", decision });
     }
 
-    const totalNew = summaryModules.reduce(
-      (acc, m) => acc + (m.result?.newDetections ?? 0),
-      0
-    );
-
+    const totalNew = summaryModules.reduce((acc, m) => acc + (m.result?.newDetections ?? 0), 0);
     const summary: ExecutionSummary = {
       executedAt: today.toISOString(),
       modules: summaryModules,
@@ -191,7 +200,6 @@ async function handleHttpRequest(
     };
 
     await sendSummaryEmail(env, summary);
-
     return Response.json({ ok: true, summary });
   }
 
@@ -199,7 +207,7 @@ async function handleHttpRequest(
 }
 
 // ────────────────────────────────────────────────────────────
-// Handler Cron (scheduled) — déclenchement automatique
+// Handler Cron (scheduled)
 // ────────────────────────────────────────────────────────────
 
 async function handleScheduled(
@@ -207,90 +215,43 @@ async function handleScheduled(
   env: Env
 ): Promise<void> {
   const today = new Date();
-  const epochDay = getEpochDay(today);
   const decision = decideCronAction(today);
-
-  console.log(
-    `[cron] Déclenchement — ${today.toISOString()} — epochDay=${epochDay} mod5=${epochDay % 5} → action="${decision}"`
-  );
-
-  if (decision === "none") {
-    console.log(
-      "[cron] Jour de repos — aucun module à exécuter aujourd'hui."
-    );
-    return;
-  }
+  if (decision === "none") return;
 
   const summaryModules: ExecutionSummary["modules"] = [];
-
-  // ── Module ENCG (isolé) ──────────────────────────────────
   if (decision === "encg") {
-    console.log("[cron] → Exécution module ENCG");
     const r = await runModule("encg", env);
     summaryModules.push({ service: "encg", ...r });
   }
-
-  // ── Module Universités (isolé) ──────────────────────────
   if (decision === "universites") {
-    console.log("[cron] → Exécution module Universités");
     const r = await runModule("universites", env);
     summaryModules.push({ service: "universites", ...r });
   }
 
-  // ── Email de synthèse ───────────────────────────────────
-  const totalNew = summaryModules.reduce(
-    (acc, m) => acc + (m.result?.newDetections ?? 0),
-    0
-  );
-  const hasErrors = summaryModules.some((m) => m.status === "error");
-
+  const totalNew = summaryModules.reduce((acc, m) => acc + (m.result?.newDetections ?? 0), 0);
   const summary: ExecutionSummary = {
     executedAt: today.toISOString(),
     modules: summaryModules,
     totalNewDetections: totalNew,
-    hasErrors,
+    hasErrors: summaryModules.some((m) => m.status === "error"),
     isDryRun: env.DRY_RUN === "true",
   };
 
   await sendSummaryEmail(env, summary);
-
-  console.log(
-    `[cron] Fin — ${totalNew} nouvelle(s) détection(s) — ${hasErrors ? "ERREURS" : "OK"}`
-  );
 }
 
-// ────────────────────────────────────────────────────────────
-// Export Worker
-// ────────────────────────────────────────────────────────────
-
 export default {
-  /**
-   * Handler HTTP : tests manuels, monitoring, déclenchement forcé.
-   */
   async fetch(request: Request, env: Env): Promise<Response> {
     return handleHttpRequest(request, env);
   },
-
-  /**
-   * Handler cron : exécution automatique quotidienne.
-   * La logique interne décide quel module exécuter selon le jour.
-   */
-  async scheduled(
-    event: ScheduledEvent,
-    env: Env,
-    ctx: ExecutionContext
-  ): Promise<void> {
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(handleScheduled(event, env));
   },
 };
 
-// ────────────────────────────────────────────────────────────
-// Utilitaire : calcul des jours restants avant prochain run
-// ────────────────────────────────────────────────────────────
-
 function computeNextIn(currentEpochDay: number, targetMod: number): number {
   const current = currentEpochDay % 5;
-  if (current === targetMod) return 5; // prochain dans 5 jours
+  if (current === targetMod) return 5;
   let diff = (targetMod - current + 5) % 5;
   if (diff === 0) diff = 5;
   return diff;
