@@ -28,7 +28,7 @@ EMAIL_PROVIDER = "resend"
 ALERT_EMAIL_TO = "poodasamuel0910@gmail.com"
 
 # Adresse expéditrice (doit être vérifiée sur Resend/Brevo)
-ALERT_EMAIL_FROM = "bot@monadmissionmaster.poodasamuel.com"
+ALERT_EMAIL_FROM = "poodasamuelpro@gmail.com"
 
 # Mode dry-run : "true" = ne pas envoyer de vrais emails, "false" = envoi réel
 DRY_RUN = "false"
